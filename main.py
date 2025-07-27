@@ -1,6 +1,6 @@
 import os
 import logging
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 from handlers import start, button, registration, faq, handle_message
 from config import BOT_TOKEN, PORT
 from flask import Flask, request
@@ -29,7 +29,7 @@ def run_flask():
     """Запускает Flask сервер в отдельном потоке"""
     app.run(host='0.0.0.0', port=PORT, debug=False)
 
-def main():
+async def main():
     """Основная функция для запуска бота"""
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN не найден в переменных окружения!")
@@ -41,23 +41,22 @@ def main():
     flask_thread.start()
     
     # Создание и настройка Telegram бота
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
+    application = Application.builder().token(BOT_TOKEN).build()
 
     # Регистрация обработчиков команд
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("registration", registration))
-    dp.add_handler(CommandHandler("faq", faq))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("registration", registration))
+    application.add_handler(CommandHandler("faq", faq))
 
     # Регистрация обработчиков сообщений и callback
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-    dp.add_handler(CallbackQueryHandler(button))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(CallbackQueryHandler(button))
 
     # Запуск бота
     logger.info("Запуск бота...")
-    updater.start_polling()
+    await application.run_polling()
     logger.info("Бот запущен успешно!")
-    updater.idle()
 
 if __name__ == '__main__':
-    main()
+    import asyncio
+    asyncio.run(main())
