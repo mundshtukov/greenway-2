@@ -6,7 +6,7 @@ import time
 import threading
 import urllib3
 import logging
-from telegram.ext import ContextTypes
+from telegram.ext import CallbackContext
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -92,7 +92,7 @@ def refresh_token_periodically():
             logger.error(f"Ошибка в refresh_token_periodically: {e}")
             time.sleep(3600)  # В случае ошибки ждем час
 
-async def get_gigachat_response(message: str, context: ContextTypes.DEFAULT_TYPE) -> str:
+def get_gigachat_response(message: str, context: CallbackContext) -> str:
     global access_token
     
     # Проверяем токен
