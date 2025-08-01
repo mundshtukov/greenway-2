@@ -21,7 +21,7 @@ token_lock = threading.Lock()
 def get_access_token():
     global access_token, token_expiry
     
-    with token_lock:  # Защита от одновременного обновления токена
+    with token_lock:
         # Проверяем, не обновил ли токен другой поток
         if access_token and time.time() < token_expiry:
             return access_token
@@ -33,135 +33,187 @@ def get_access_token():
             logger.error("Ошибка: GIGACHAT_CLIENT_ID или GIGACHAT_CLIENT_SECRET не установлены")
             return None
 
+        # Попробуем несколько вариантов API
+        apis_to_try = [
+            {
+                'url': 'https://ngw.devices.sberbank.ru:9443/api/v2/oauth',
+                'scope': 'GIGACHAT_API_PERS'
+            },
+            {
+                'url': 'https://gigachat.devices.sberbank.ru/api/v1/oauth',
+                'scope': 'GIGACHAT_API_PERS'
+            }
+        ]
+
         auth_key = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-        url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-        payload = {'scope': 'GIGACHAT_API_PERS'}
-        headers = {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Accept': 'application/json',
-            'RqUID': str(uuid.uuid4()),
-            'Authorization': f'Basic {auth_key}'
-        }
 
-        try:
-            logger.info("Запрос на получение токена")
-            response = requests.post(url, headers=headers, data=payload, verify=False, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-            access_token = data['access_token']
-            # Исправляем расчет времени истечения
-            token_expiry = time.time() + data['expires_in'] - 300  # expires_in в секундах
-            logger.info(f"Токен успешно получен. Истекает в: {time.ctime(token_expiry)}")
-            return access_token
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Ошибка получения токена: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Статус код: {e.response.status_code}")
-                logger.error(f"Тело ответа: {e.response.text}")
-            return None
+        for api_config in apis_to_try:
+            try:
+                logger.info(f"Попытка получения токена через: {api_config['url']}")
+                
+                payload = {'scope': api_config['scope']}
+                headers = {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Accept': 'application/json',
+                    'RqUID': str(uuid.uuid4()),
+                    'Authorization': f'Basic {auth_key}'
+                }
 
-def refresh_token_periodically():
-    while True:
-        try:
-            get_access_token()
-            # Обновляем токен за 5 минут до истечения
-            sleep_time = max(300, token_expiry - time.time() - 300)
-            logger.info(f"Следующее обновление токена через {sleep_time} секунд")
-            time.sleep(sleep_time)
-        except Exception as e:
-            logger.error(f"Ошибка при обновлении токена: {e}")
-            time.sleep(300)  # Повторяем через 5 минут при ошибке
+                response = requests.post(
+                    api_config['url'], 
+                    headers=headers, 
+                    data=payload, 
+                    verify=False, 
+                    timeout=30
+                )
+                
+                logger.info(f"Статус ответа: {response.status_code}")
+                logger.info(f"Тело ответа: {response.text}")
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    if 'access_token' in data:
+                        access_token = data['access_token']
+                        
+                        # Устанавливаем время истечения
+                        if 'expires_in' in data:
+                            token_expiry = time.time() + int(data['expires_in']) - 300
+                        else:
+                            # По умолчанию токен живет 30 минут
+                            token_expiry = time.time() + 1800 - 300
+                        
+                        logger.info(f"Токен успешно получен! Истекает в: {time.ctime(token_expiry)}")
+                        return access_token
+                    else:
+                        logger.error(f"Нет access_token в ответе: {data}")
+                else:
+                    logger.warning(f"Неуспешный ответ от {api_config['url']}: {response.status_code}")
+                    
+            except Exception as e:
+                logger.error(f"Ошибка при запросе к {api_config['url']}: {e}")
+                continue
+
+        logger.error("Не удалось получить токен ни через один API")
+        return None
 
 def get_gigachat_response(message: str, context: CallbackContext) -> str:
     global access_token
-    logger.info(f"Текущее время: {time.ctime(time.time())}")
-    logger.info(f"Время истечения токена: {time.ctime(token_expiry)}")
-    logger.info(f"Токен доступен: {'Да' if access_token else 'Нет'}")
-
-    # Проверка и обновление токена с запасом времени
+    
+    # Простые fallback ответы если GigaChat недоступен
+    fallback_responses = [
+        "Привет! 👋 Я бот Greenway! Расскажи, что тебя интересует: продукты или бизнес-возможности? 😊",
+        "Давай поговорим о Greenway! 🌱 Хочешь узнать о наших эко-продуктах или возможностях заработка? 💚",
+        "Интересный вопрос! 🤔 Но лучше всего обратиться к наставнику @mundshtukova - она все расскажет! 📞",
+        "Ой! 😅 Давай лучше я покажу тебе наши продукты или расскажу о бизнесе с Greenway! 🚀"
+    ]
+    
+    # Проверяем наличие токена
     if not access_token or time.time() > (token_expiry - 60):
         logger.info("Обновляем токен...")
         if not get_access_token():
-            return "Ошибка авторизации. Попробуй позже 🛠️"
+            logger.warning("Не удалось получить токен, используем fallback")
+            # Используем простой fallback
+            import random
+            return random.choice(fallback_responses)
 
     # Инициализация счетчика попыток
     if not context.user_data.get('gigachat_attempts'):
         context.user_data['gigachat_attempts'] = 0
 
-    if context.user_data['gigachat_attempts'] >= 2:
+    if context.user_data['gigachat_attempts'] >= 3:
         context.user_data['gigachat_attempts'] = 0
         if context.user_data.get('last_response_was_fallback'):
             return "Кажется, ты занят 😄 Напиши наставнику (@mundshtukova), она поможет с Greenway!"
         context.user_data['last_response_was_fallback'] = True
         return "Ой, давай вернемся к Greenway! 😊 Хочешь узнать о продуктах или о бизнесе?"
 
-    model = 'GigaChat'
-    url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-    prompt = (
-        f"Ты бот Greenway, отвечай живо, дружелюбно, только о продуктах Greenway (более 1000 продуктов и 30+ брендов), "
-        f"бизнесе или регистрации. Не обсуждай другие темы, используй эмодзи, перенаправляй к сценарию. "
-        f"Ответ должен быть коротким. Пользователь написал: '{message}'"
-    )
+    # Пробуем разные модели GigaChat
+    models_to_try = ['GigaChat', 'GigaChat-Pro', 'GigaChat:latest']
+    
+    for model in models_to_try:
+        try:
+            url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
+            prompt = (
+                f"Ты бот Greenway, отвечай живо, дружелюбно, только о продуктах Greenway "
+                f"(более 1000 продуктов и 30+ брендов), бизнесе или регистрации. "
+                f"Не обсуждай другие темы, используй эмодзи, перенаправляй к сценарию. "
+                f"Ответ должен быть коротким. Пользователь написал: '{message}'"
+            )
 
-    payload = {
-        'model': model,
-        'messages': [{'role': 'user', 'content': prompt}],
-        'max_tokens': 100,
-        'temperature': 0.7
-    }
+            payload = {
+                'model': model,
+                'messages': [{'role': 'user', 'content': prompt}],
+                'max_tokens': 100,
+                'temperature': 0.7
+            }
 
-    headers = {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'Authorization': f'Bearer {access_token}',
-        'RqUID': str(uuid.uuid4())
-    }
+            headers = {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Authorization': f'Bearer {access_token}',
+                'RqUID': str(uuid.uuid4())
+            }
 
-    try:
-        logger.info(f"Запрос к GigaChat: модель={model}")
-        response = requests.post(url, headers=headers, json=payload, verify=False, timeout=30)
-        
-        # Детальное логирование ответа
-        logger.info(f"Статус код ответа: {response.status_code}")
-        
-        if response.status_code == 401:
-            logger.warning("Получен 401 Unauthorized, обновляем токен...")
-            if get_access_token():
-                headers['Authorization'] = f'Bearer {access_token}'
-                response = requests.post(url, headers=headers, json=payload, verify=False, timeout=30)
-            else:
-                return "Ошибка авторизации. Попробуй позже 🛠️"
-        
-        response.raise_for_status()
-        result = response.json()
-        context.user_data['gigachat_attempts'] += 1
-        context.user_data['last_response_was_fallback'] = False
-        
-        if 'choices' in result and len(result['choices']) > 0:
-            return result['choices'][0]['message']['content']
-        else:
-            logger.error(f"Неожиданный формат ответа: {result}")
-            return "Получен некорректный ответ от сервера 🤔"
+            logger.info(f"Запрос к GigaChat с моделью: {model}")
+            response = requests.post(url, headers=headers, json=payload, verify=False, timeout=30)
             
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Ошибка при обращении к GigaChat: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            logger.error(f"Статус код: {e.response.status_code}")
-            logger.error(f"Тело ответа: {e.response.text}")
-        context.user_data['last_response_was_fallback'] = True
-        return "Ой, техническая неполадка 😓 Попробуй ещё раз или напиши наставнику!"
-    except Exception as e:
-        logger.error(f"Неожиданная ошибка в get_gigachat_response: {e}")
-        context.user_data['last_response_was_fallback'] = True
-        return "Что-то пошло не так 😅 Попробуй еще раз!"
+            if response.status_code == 200:
+                result = response.json()
+                context.user_data['gigachat_attempts'] += 1
+                context.user_data['last_response_was_fallback'] = False
+                
+                if 'choices' in result and len(result['choices']) > 0:
+                    return result['choices'][0]['message']['content']
+                else:
+                    logger.warning(f"Неожиданный формат ответа от модели {model}")
+                    continue
+            elif response.status_code == 401:
+                logger.warning("Токен истек, пробуем обновить...")
+                if get_access_token():
+                    # Обновляем заголовок и пробуем еще раз
+                    headers['Authorization'] = f'Bearer {access_token}'
+                    response = requests.post(url, headers=headers, json=payload, verify=False, timeout=30)
+                    if response.status_code == 200:
+                        result = response.json()
+                        if 'choices' in result and len(result['choices']) > 0:
+                            return result['choices'][0]['message']['content']
+                break
+            else:
+                logger.warning(f"Ошибка {response.status_code} от модели {model}: {response.text}")
+                continue
+                
+        except Exception as e:
+            logger.error(f"Ошибка при запросе к модели {model}: {e}")
+            continue
+
+    # Если все попытки неудачны, используем fallback
+    context.user_data['last_response_was_fallback'] = True
+    import random
+    return random.choice(fallback_responses)
+
+def refresh_token_periodically():
+    """Фоновое обновление токена"""
+    while True:
+        try:
+            time.sleep(300)  # Проверяем каждые 5 минут
+            if time.time() > (token_expiry - 300):  # За 5 минут до истечения
+                logger.info("Время обновить токен...")
+                get_access_token()
+        except Exception as e:
+            logger.error(f"Ошибка в фоновом обновлении токена: {e}")
+            time.sleep(300)
 
 def start_token_refresh():
-    # Получаем первый токен при запуске
+    """Запуск сервиса токенов"""
     logger.info("Запуск сервиса обновления токенов...")
-    if get_access_token():
-        logger.info("Первичный токен получен успешно")
-    else:
-        logger.warning("Не удалось получить первичный токен")
+    
+    # Не блокируем запуск приложения если токен не получен
+    try:
+        get_access_token()
+    except Exception as e:
+        logger.error(f"Ошибка при получении первичного токена: {e}")
+        logger.info("Продолжаем запуск без токена, будем использовать fallback ответы")
     
     # Запускаем фоновое обновление
     thread = threading.Thread(target=refresh_token_periodically, daemon=True)
