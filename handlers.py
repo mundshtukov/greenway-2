@@ -18,8 +18,15 @@ def start(update: Update, context: CallbackContext):
         f"🚀 Но это еще не всё! Тысячи людей уже превратили покупки в стабильный доход!\n\n"
         f"👇 Выбери свой путь к лучшей жизни:"
     )
+    
+    # Отправляем приветственное сообщение
     update.message.reply_text(welcome_message, reply_markup=get_main_keyboard())
-    update.message.reply_text("", reply_markup=get_role_inline_keyboard())
+    
+    # Отправляем вторым сообщением кнопки выбора роли
+    update.message.reply_text(
+        "🤔 Что тебя больше интересует?", 
+        reply_markup=get_role_inline_keyboard()
+    )
 
 def button(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -259,7 +266,6 @@ def button(update: Update, context: CallbackContext):
             )
         else:
             logger.warning(f"Неизвестный callback: {text}")
-            # Более корректная обработка неизвестного callback
             query.edit_message_text(
                 "🤔 Что-то пошло не так... Давай начнем сначала!",
                 reply_markup=get_role_inline_keyboard()
@@ -267,7 +273,6 @@ def button(update: Update, context: CallbackContext):
             
     except Exception as e:
         logger.error(f"Ошибка в обработчике кнопки {text}: {e}")
-        # Попытка отправить новое сообщение, если редактирование не удалось
         try:
             context.bot.send_message(
                 chat_id=query.message.chat_id,
