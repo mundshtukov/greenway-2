@@ -1,10 +1,10 @@
-# Альтернативная версия requirements.txt с патчем для imghdr
 python-telegram-bot==13.14
 requests==2.31.0
 urllib3==1.26.16
 Flask==2.3.3
 gunicorn==21.2.0
-
-# Патч для отсутствующего imghdr в Python 3.13+
-# Этот пакет восстанавливает функциональность imghdr
 Pillow>=8.0.0
+tornado==6.1
+cachetools==4.2.2
+certifi
+APScheduler==3.6.3
